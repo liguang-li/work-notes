@@ -110,18 +110,96 @@ jr $ra		        ret
 PC: 程序计数器，存放下一条将要被执行指令的地址的寄存器.
 
 * PUSH: addi $sp,$sp,-4; sw $s1,0($sp)
+
 * POP:  lw $s1,0($sp); addi $sp,$sp,4
 
+## Registers in MIPS, X86_64 and ARM
 * MIPS:
+~~~
 $t0-$t9: 10个临时寄存器,在过程调用中不必被调用者(被调用者)保存.
 $s0-$s7: 8个保留寄存器,在过程调用中必须被保存(由被调用着保存和恢复).
-
+~~~
 * X86_64:
-rbx,rbp,r12,r13,r14,r15 被调用者保存
-	r10,r11			调用者保存
+~~~
+rbx,rbp,r12,r13,r14,r15		被调用者保存
+r10,r11						调用者保存
 
-	rdi,rsi,rdx,rcx,r8,r9	入参
-	rax			返回值
+rdi,rsi,rdx,rcx,r8,r9		入参
+rax							返回值
+~~~
+* ARM
+
+  | register | AKA  | Use                                                          |
+  | -------- | ---- | ------------------------------------------------------------ |
+  | r0       |      | Return value, first function argument                        |
+  | r1-r3    |      | Function arguments and general scratch                       |
+  | r4-r11   |      | Saved registers, general registers                           |
+  | r12      | ip   | Intra-procedure scratch register, rarely used by the linker  |
+  | r13      | sp   | Stack pointer, a pointer to the end of the stack.  Moved by push and pop |
+  | r14      | lr   | Link register, storing the address to return to when the function is done.<br />Written by "bl" (branch and link, like function call), often saved with a push/pop sequence, read by "bx lr" (branch to link register) or the pop. |
+  | r15      | pc   | Program counter, the current memory address being executed   |
+~~~
+User Mode  SVC Mode   IRQ Mode   FIQ Mode  APCS
+
+R0 ------- R0 ------- R0 ------- R0        a1
+R1 ------- R1 ------- R1 ------- R1        a2
+R2 ------- R2 ------- R2 ------- R2        a3
+R3 ------- R3 ------- R3 ------- R3        a4
+R4 ------- R4 ------- R4 ------- R4        v1
+R5 ------- R5 ------- R5 ------- R5        v2
+R6 ------- R6 ------- R6 ------- R6        v3
+R7 ------- R7 ------- R7 ------- R7        v4
+R8 ------- R8 ------- R8         R8_fiq    v5
+R9 ------- R9 ------- R9         R9_fiq    v6
+R10 ------ R10 ------ R10        R10_fiq   sl
+R11 ------ R11 ------ R11        R11_fiq   fp
+R12 ------ R12 ------ R12        R12_fiq   ip
+R13        R13_svc    R13_irq    R13_fiq   sp
+R14        R14_svc    R14_irq    R14_fiq   lr
+------------- R15 / PC -------------       pc  
+
+User Mode: the usual mode for applications to run in.
+Supervisor Mode (SVC Mode): used mainly by SWIs and the OS. This mode has additional privileges which allow greater control of the computer.
+Interrupt Mode (IRQ Mode): used to handle peripherals that issues interrupts.
+Fast Interrupt Mode (FIQ Mode): used to handle peripherals that issue fast interrupts.
+
+R15 is built up as follows:
+  Bit  31  30  29  28  27  26  25------------2  1  0
+
+       N   Z   C   V   I   F   Program Counter  S1 S0
+
+N  Negative        Set if result is negative
+Z  Zero            Set if result is zero
+C  Carry           Set if carry occurs
+O  Overflow        Set if overflow occurs
+I  IRQ             Interrupt disable
+F  FIQ             Fast Interrupt disable
+
+S1   S0   Mode
+0    0    USR - User mode
+0    1    FIQ - Fast Interrupt mode
+1    0    IRQ - Interrupt mode
+1    1    SVC - Supervisor mode
+
+MOV     R0, #3          ; Load a bit mask (%11) into R0
+AND     R0, R0, PC      ; AND R15 into R0, to get the mode status
+CMP     R0, #3          ; Compare mode with '3' (SVC)
+BEQ     svc             ; If SVC mode, branch to 'svc'
+CMP     R0, #2          ; Compare mode with '2' (IRQ)
+BEQ     irq             ; If IRQ mode, branch to 'irq'
+CMP     R0, #1          ; Compare mode with '1' (FIQ)
+BEQ     fiq             ; If FIQ mode, branch to 'fiq'
+CMP     R0, #0          ; Compare mode with '0' (USR)
+BEQ     usr             ; If USR mode, branch to 'usr'
+
+B     Branch
+BL    Branch with Link
+BX lr			;
+
+LDR	: load into register
+STR	: store
+~~~
+
 
 **$fp 相当于 rbp**
 ~~~
@@ -395,5 +473,17 @@ PA: physical address
 * S: shared
 * I: invalid
 
-![image-20191204175843477](/home/wrsadmin/.config/Typora/typora-user-images/image-20191204175843477.png)
-
+~~~
+	   CPU0                    CPU1
+	|       |               |       |
+	|<-> store buffer       |<-> store buffer
+	|       |               |       |
+	->Cache<-               ->Cache<-
+	   |                        |
+	Invalidate              Invalidate
+	  queue	   　             Queue
+	   |                        |
+	   ------Interconnect--------
+		      |
+		    Memory
+~~~
