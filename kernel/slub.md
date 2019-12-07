@@ -14,18 +14,23 @@ Linux的物理内存管理采用了以页为单位的buddy system,但多数情�
 
 ## Data structure
 ~~~c
-/* 
- * Slab cache management. 
+/*
+ * Slab cache management.
  */
 struct kmem_cache {
         struct kmem_cache_cpu __percpu *cpu_slab; //本地内存池,优先从本地cpu分配内存以保证cache的命中率
         /* Used for retriving partial slabs etc */
         unsigned long flags;	//object分配掩码,i.e. SLAB_HWCACHE_ALIGN:object按照硬件cache 对齐
-        unsigned long min_partial; //限制struct kmem_cache_node中的partial链表slab的数量,大于这个mini_partial的值，那么多余的slab就会被释放
+        unsigned long min_partial; //限制struct kmem_cache_node中的partial链表slab的数量,大于这个
+				     mini_partial的值，那么多余的slab就会被释放
         int size;               /* The size of an object including meta data */
         int object_size;        /* The size of an object without meta data */
-        int offset;             /* Free pointer offset. */ //每个object在没有分配之前,完全可以在每个object中存储下一个object内存首地址，就形成了一个单链表,offset就是存储下个object地址数据相对于这个object首地址的偏移
-        int cpu_partial;        /* Number of per cpu partial objects to keep around */ //per_cpu partial中所有slab的free object的数量的最大值，超过这个值就会将所有的slab转移到kmem_cache_node的partial链表
+        int offset;             /* Free pointer offset. */ //每个object在没有分配之前,完全可以在每个
+				   object中存储下一个object内存首地址，就形成了一个单链表,offset就是存储
+				   下个object地址数据相对于这个object首地址的偏移
+        int cpu_partial;        /* Number of per cpu partial objects to keep around */ //per_cpu partial中
+				   所有slab的free object的数量的最大值，超过这个值就会将所有的slab转移到
+				   kmem_cache_node的partial链表
         struct kmem_cache_order_objects oo; //低16位代表一个slab中所有object的数量,高16位代表一个slab管理的page数量
  
         /* Allocation and freeing of slabs */
