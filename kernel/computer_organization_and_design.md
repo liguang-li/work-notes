@@ -126,6 +126,9 @@ r10,r11						调用者保存
 
 rdi,rsi,rdx,rcx,r8,r9		入参
 rax							返回值
+
+STI:
+CLI:
 ~~~
 * ARM
 
@@ -198,6 +201,15 @@ BX lr			;
 
 LDR	: load into register
 STR	: store
+
+//读取或设置中断的flags
+MRS Rd, <PSR>; //Rd := PSR
+MSR <PSR>, Rd;	//
+
+CPSID I; //disable interrupt
+CPSIE I; //enable interrupt
+CPSID F; //disable exception
+CPSIE F; //enable exception
 ~~~
 
 
@@ -473,17 +485,17 @@ PA: physical address
 * S: shared
 * I: invalid
 
-~~~
-	   CPU0                    CPU1
-	|       |               |       |
-	|<-> store buffer       |<-> store buffer
-	|       |               |       |
-	->Cache<-               ->Cache<-
-	   |                        |
-	Invalidate              Invalidate
-	  queue	   　             Queue
-	   |                        |
-	   ------Interconnect--------
-		      |
-		    Memory
-~~~
+![image-20191210172750215](computer_organization_and_design.assets/image-20191210172750215.png)
+
+* Store Buffer:
+	1. barrier smp_mb() will cause the CPU to flush its store buffer before applying each subsequent store to its variable’s cache line.
+	2. 写内存屏障为当前存储缓冲区中的所有数据做标记,如果存储缓冲器中有标记过的数据,那么后面的存储指令只能把数据写到存储缓冲区中,不能写到缓存中.
+	I.E.
+		CPU0				CPU1
+		a = 1;				while (b == 0) continue;	//只能读取CPU0 cache中数据,不能读取store buffer中的数据
+		smp_wmb();			assert(a == 1);			//需等待flush后才可见.
+		b = 1;
+
+* Invalidate queue: 
+	1. S: 发送使无效队列,处理器把使无效消息放到使无效队列中,立即发送使无效确认信息,不需要执行使缓存无效的操作.
+	2. RMB: 阻止后续的读操作,应先处理使无效队列,再执行操作.
