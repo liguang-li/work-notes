@@ -211,9 +211,35 @@ CPSIE I; //enable interrupt
 CPSID F; //disable exception
 CPSIE F; //enable exception
 ~~~
+function call:
 
+ARM:
+push {fp}
+add fp, sp, 0
+or
+push {fp, lr}
+add fp, sp, #4
+回溯需对应汇编
+		---------------
+			lr
+	fp	---------------
+			fp
+	sp	---------------
+
+pop {fp, sp}
 
 **$fp 相当于 rbp**
+
+X86_64
+
+call
+ret
+		---------------
+			ret
+		---------------
+			rbp
+	rbp	---------------  rsp
+
 ~~~
 	$sp --> 7fff fffc ------------
 			     stack
