@@ -823,3 +823,83 @@ static int __init code_bytes_setup(char *s)
         return 1;
 }
 __setup("code_bytes=", code_bytes_setup);
+
+
+## Kprobe
+Kprobe是一个动态收集调试和性能的工具：机制是用户指定一个探测点，并把一个用户定义的处理函数关联到探测点，当内核执行到该探测点时，相应的关联函数被执行，然后继续执行正常的代码路径。
+Kprobe实现了三种类型的探测点：kprobe，jprobe和kretprobe.
+* Kprobe是可以被插入到内核中的任何指令位置的探测点。
+* jprobe则只能被插入到一个内核函数的入口(linux5.2.2 obsolete)
+* kretprobe则是在指定的内核函数返回时才被执行。
+
+当安装一个kprobe探测点时，kprobe首先备份被探测的指令，然后使用断点指令(x86中的int3)来取代被探测指令的头一个或几个字节。当CPU执行到探测点时，将因运行断点指令而执行trap操作，此时会保存CPU寄存器，调用相应的trap处理函数，而trap处理函数将调用相应的notifier_call_chain中注册的所有notifier函数，kprobe正是通过向trap对应的notifier_call_chain注册关联到探测点的处理函数来实现探测处理的。
+当kprobe注册的notifier被执行时，它首先执行关联到探测点的pre_handler函数，并把相应的kprobe结构和保存的寄存器作为该函数的参数，接着，kprobe单步执行被探测指令的备份，最后kprobe执行post_handler。等所有运行完毕后，紧跟在被探测之后的指令流被正常执行。
+
+kretprobe也使用了kprobe来实现，当用户调用register_kretprobe()时，kprobe在被探测函数的入口建立了一个探测点，当执行到探测点时，kprobe保存了被探测函数的返回地址并取代返回地址为一个trampoline的地址，kprobe在初始化时定义了改trampoline并且为trampoline注册了一个kprobe..
+
+Kprobe具体原理
+使用kprobe最常用的就是查询函数调用的参数和返回值：
+cd /sys/kernel/debug/tracing
+echo 'p:myprobe do_sys_open fname_str=+0(%si):string' > kprobe_events
+echo 'r:myretprobe do_sys_open $retval' >> kprobe_events
+\# ls ./events/kprobes/
+enable filter myprobe myretprobe
+echo 1 > ./events/kprobes/myprobe/enable
+echo 1 > ./events/kprobes/myretprobe/enable
+
+cat ./trace
+...
+
+至于在kprobe_events文件中指定的寄存器(%si),基于具体平台的不同会不一样，可以预先使用perf工具查询到当前平台上获取函数参数的寄存器.
+\# perf probe 'do_sys_open filename:string flags:u32'
+Added new event:
+...
+
+\# cat /sys/kernel/debug/tracing/kprobe_events
+p:probe/do_sys_open	_text+2391184 filename_string=+0(%si):string flags_u32=%dx:u32
+
+第二类就是使用trace event:
+__schedule()
+static void __sched notrace __schedule(bool preempt)
+{
+...
+	trace_sched_switch(preempt, prev, next);
+...
+}
+内核代码编译的时候就已经内嵌于函数中的,只需打开对应开关就可以看到固定格式的打印信息.
+\# pwd
+/sys/kernel/debug/tracing/events/sched/sched_switch
+\#cat /sys/kernel/debug/tracing/trace
+
+有一些函数里面没有内嵌trace event,或者有时候想查看函数的调用堆栈,可以使用
+trace function + stack_trace
+
+cd /sys/kernel/debug/tracing/
+echo 0 > ./tracing_on
+echo function > current_tracer
+echo 1 > options/function_stack_trace
+echo "your function" > set_ftrace_filter
+echo 1 > tracing_on
+
+比如把"your function"改为schedule. cat ./trace可以看到调用schedule时的函数堆栈，而不需要再函数中加上WARN_ON(1)重新编译内核.
+不管是function tracer还是function_graph tracer，实现此功能时同步代码段的方法，
+
+<schedule>:
+	0f 1f 44 00 00		nop					----------------------
+	53			push %rbx
+				mov %gs:0x16100,%rbx
+	...
+
+===>
+<schedule>:
+	e8 1b d0 1e 00		callq fffffff81c01930	<__fentry__>    -----------------------
+	53			push %rbx
+	...
+
+因为实现这些功能的原理就是在代码段函数头中插上预先设定好的函数调用，如果刚刚插入代码时，正好有程序跑到这块代码就可能系统崩溃，在x86上采用的就是现在函数头中插入一个字节指令'cc'，当其它进程执行此指令时，系统进入int3终端流程
+
+do_int3(struct pt_regs *regs) {
+	regs->ip += 5;
+	return;
+}
+当插入'cc'之后，把'cc'指令同步到所有的cpu，然后把'cc'之后的代码换成函数调用代码，最后把'cc'换掉，一切ok.

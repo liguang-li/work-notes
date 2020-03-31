@@ -196,7 +196,7 @@ X86	31		 10    5/7   1 0
 #define SWP_OFFSET_SHIFT (_PAGE_BIT_PROTNONE + 1)
 #define SWP_TYPE_BITS 5
 ~~~
-* TYPE: 5 bits up to 32 swap areas.
+* TYPE: 5 bits up to 32 swap areas. The restriction is due to the consumption of the vmalloc address space. If a swap area is the maximum possible size ten 32M is required for the swap_map, remember that each page uses one for the reference count. For just MAX_SWAPFILES maximum number of swap areas to exist, 1GB of virtual malloc space is required which is simply impossible.
 * OFFSET: slot index. swap_info_struct->swap_area is a vmalloc address space, remember each page uses one char for the reference count.
 
 ~~~c
@@ -251,5 +251,9 @@ Each entry in the *swap_map* is a reference count of the number of users of the 
 ~~~
 
 * get_swap_page
-
+All page sized slots are tracked by the array map *swap_info_struct->swap_map* which is of type unsigned char. Each entry is a reference count of the number of uses of the slot which happens in the case of a shared page and is 0 when free. 
+* SWAP_MAP_MAX: the page is permanently reserved for this slot.
+* SWAP_MAP_BAD: the slot is unusable.
+    get_swap_page
+        scan_swap_map
 * add_to_swap_cache

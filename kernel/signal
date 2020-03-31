@@ -1,0 +1,579 @@
+#Signal in Linux
+~~~c
+struct task_struct {
+...
+#if defined(SPLIT_RSS_COUNTING)
+	struct task_rss_stat	rss_stat;
+#endif
+/* task state */
+	int exit_state;
+	int exit_code, exit_signal;
+	int pdeath_signal;  			/*  The signal sent when the parent dies  */
+	unsigned long jobctl;	/* JOBCTL_*, siglock protected */
+...
+/* signal handlers */
+	struct signal_struct *signal;		//shared pending signals
+	struct sighand_struct *sighand;		/*signal handler */
+
+	sigset_t blocked, real_blocked;		//block mask and temporary block mask
+	sigset_t saved_sigmask;			/* restored if set_restore_sigmask() was used */
+	struct sigpending pending;		//private pending signals
+
+	unsigned long sas_ss_sp;		//stack pointer of the frame in the userspace stack
+	size_t sas_ss_size;			//size of the signal stack
+...
+}
+~~~
+~~~c
+#define _NSIG		64
+
+#ifdef __i386__
+# define _NSIG_BPW	32
+#else
+# define _NSIG_BPW	64
+#endif
+
+#define _NSIG_WORDS	(_NSIG / _NSIG_BPW)
+
+typedef struct {
+	unsigned long sig[_NSIG_WORDS];
+} sigset_t;
+
+/*
+ * Real Time signals may be queued.
+ */
+struct sigqueue {
+	struct list_head list;
+	int flags;
+	siginfo_t info;
+	struct user_struct *user;
+};
+
+struct sigpending {
+	struct list_head list;
+	sigset_t signal;
+};
+~~~
+~~~c
+typedef struct siginfo {
+	int si_signo;
+	int si_errno;
+	int si_code;
+
+	union {
+		int _pad[SI_PAD_SIZE];
+
+		/* kill() */
+		struct {
+			__kernel_pid_t _pid;	/* sender's pid */
+			__ARCH_SI_UID_T _uid;	/* sender's uid */
+		} _kill;
+
+		/* POSIX.1b timers */
+		struct {
+			__kernel_timer_t _tid;	/* timer id */
+			int _overrun;		/* overrun count */
+			char _pad[sizeof( __ARCH_SI_UID_T) - sizeof(int)];
+			sigval_t _sigval;	/* same as below */
+			int _sys_private;       /* not to be passed to user */
+		} _timer;
+
+		/* POSIX.1b signals */
+		struct {
+			__kernel_pid_t _pid;	/* sender's pid */
+			__ARCH_SI_UID_T _uid;	/* sender's uid */
+			sigval_t _sigval;
+		} _rt;
+
+		/* SIGCHLD */
+		struct {
+			__kernel_pid_t _pid;	/* which child */
+			__ARCH_SI_UID_T _uid;	/* sender's uid */
+			int _status;		/* exit code */
+			__ARCH_SI_CLOCK_T _utime;
+			__ARCH_SI_CLOCK_T _stime;
+		} _sigchld;
+
+		/* SIGILL, SIGFPE, SIGSEGV, SIGBUS */
+		struct {
+			void __user *_addr; /* faulting insn/memory ref. */
+#ifdef __ARCH_SI_TRAPNO
+			int _trapno;	/* TRAP # which caused the signal */
+#endif
+			short _addr_lsb; /* LSB of the reported address */
+			struct {
+				void __user *_lower;
+				void __user *_upper;
+			} _addr_bnd;
+		} _sigfault;
+
+		/* SIGPOLL */
+		struct {
+			__ARCH_SI_BAND_T _band;	/* POLL_IN, POLL_OUT, POLL_MSG */
+			int _fd;
+		} _sigpoll;
+
+		/* SIGSYS */
+		struct {
+			void __user *_call_addr; /* calling user insn */
+			int _syscall;	/* triggering system call number */
+			unsigned int _arch;	/* AUDIT_ARCH_* of syscall */
+		} _sigsys;
+	} _sifields;
+} __ARCH_SI_ATTRIBUTES siginfo_t;
+~~~
+~~~c
+
+idt:  external interrupt
+...
+(~vector + 0x80)			//the offset in the idt entry
+jmp common_interrupt
+(~vector + 0x80)			//
+jmp common_interrupt
+...
+
+/*
+ * Build the entry stubs with some assembler magic.
+ * We pack 1 stub into every 8-byte block.
+ */
+	.align 8
+ENTRY(irq_entries_start)
+    vector=FIRST_EXTERNAL_VECTOR				//32
+    .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)		//256 - 32
+	pushq	$(~vector+0x80)			/* Note: always in signed byte range */
+    vector=vector+1
+	jmp	common_interrupt
+	.align	8
+    .endr
+END(irq_entries_start)
+~~~
+~~~
+/* 0(%rsp): ~(interrupt number) */
+	.macro interrupt func
+	cld
+	ALLOC_PT_GPREGS_ON_STACK
+	SAVE_C_REGS
+	SAVE_EXTRA_REGS
+
+	testb	$3, CS(%rsp)
+	jz	1f
+
+	/*
+	 * IRQ from user mode.  Switch to kernel gsbase and inform context
+	 * tracking that we're in kernel mode.
+	 */
+	SWAPGS
+	SWITCH_KERNEL_CR3
+
+	/*
+	 * We need to tell lockdep that IRQs are off.  We can't do this until
+	 * we fix gsbase, and we should do it before enter_from_user_mode
+	 * (which can take locks).  Since TRACE_IRQS_OFF idempotent,
+	 * the simplest way to handle it is to just call it twice if
+	 * we enter from user mode.  There's no reason to optimize this since
+	 * TRACE_IRQS_OFF is a no-op if lockdep is off.
+	 */
+	TRACE_IRQS_OFF
+
+#ifdef CONFIG_CONTEXT_TRACKING
+	call enter_from_user_mode
+#endif
+
+1:
+	/*
+	 * Save previous stack pointer, optionally switch to interrupt stack.
+	 * irq_count is used to check if a CPU is already on an interrupt stack
+	 * or not. While this is essentially redundant with preempt_count it is
+	 * a little cheaper to use a separate counter in the PDA (short of
+	 * moving irq_enter into assembly, which would be too much work)
+	 */
+	movq	%rsp, %rdi
+	incl	PER_CPU_VAR(irq_count)
+	cmovzq	PER_CPU_VAR(irq_stack_ptr), %rsp	//compare mov, if zf = 0, mov
+	pushq	%rdi
+	/* We entered an interrupt context - irqs are off: */
+	TRACE_IRQS_OFF
+
+	call	\func	/* rdi points to pt_regs */
+	.endm
+
+	/*
+	 * The interrupt stubs push (~vector+0x80) onto the stack and
+	 * then jump to common_interrupt.
+	 */
+	.p2align CONFIG_X86_L1_CACHE_SHIFT
+common_interrupt:
+	ASM_CLAC
+	addq	$-0x80, (%rsp)			/* Adjust vector to [-256, -1] range */
+	interrupt do_IRQ
+	/* 0(%rsp): old RSP */
+ret_from_intr:
+	DISABLE_INTERRUPTS(CLBR_NONE)
+	TRACE_IRQS_OFF
+	decl	PER_CPU_VAR(irq_count)
+
+	/* Restore saved previous stack */
+	popq	%rsp
+
+	testb	$3, CS(%rsp)
+	jz	retint_kernel
+
+	/* Interrupt came from user space */
+GLOBAL(retint_user)
+	mov	%rsp,%rdi
+	call	prepare_exit_to_usermode
+	TRACE_IRQS_IRETQ
+	SWITCH_USER_CR3
+	SWAPGS
+	jmp	restore_regs_and_iret
+
+~~~
+~~~c
+/*
+ * Note that 'init' is a special process: it doesn't get signals it doesn't
+ * want to handle. Thus you cannot kill init even with a SIGKILL even by
+ * mistake.
+ */
+void do_signal(struct pt_regs *regs)
+{
+	struct ksignal ksig;
+
+	if (get_signal(&ksig)) {				//IGN, DFL
+		/* Whee! Actually deliver the signal.  */
+		handle_signal(&ksig, regs);
+		return;
+	}
+
+	/* Did we come from a system call?, exception and interrupt will be negative value, only the system call have postive value */
+	if (syscall_get_nr(current, regs) >= 0) {
+		/* Restart the system call - no handlers present */
+		switch (syscall_get_error(current, regs)) {
+		case -ERESTARTNOHAND:
+		case -ERESTARTSYS:
+		case -ERESTARTNOINTR:
+			regs->ax = regs->orig_ax;
+			regs->ip -= 2;			//int 0x80 or sysenter have 2 bytes length
+			break;
+
+		case -ERESTART_RESTARTBLOCK:		//sleep etc, need adjust the parameter
+			regs->ax = get_nr_restart_syscall(regs);
+			regs->ip -= 2;
+			break;
+		}
+	}
+
+	/*
+	 * If there's no signal to deliver, we just put the saved sigmask
+	 * back.
+	 */
+	restore_saved_sigmask();
+}
+~~~
+
+~~~c
+int get_signal(struct ksignal *ksig)
+{
+	struct sighand_struct *sighand = current->sighand;
+	struct signal_struct *signal = current->signal;
+	int signr;
+...
+relock:
+	spin_lock_irq(&sighand->siglock);
+...
+	/* Has this task already been marked for death? */
+	if (signal_group_exit(signal)) {
+		ksig->info.si_signo = signr = SIGKILL;
+		sigdelset(&current->pending.signal, SIGKILL);
+		trace_signal_deliver(SIGKILL, SEND_SIG_NOINFO,
+				&sighand->action[SIGKILL - 1]);
+		recalc_sigpending();
+		goto fatal;
+	}
+
+	for (;;) {
+		struct k_sigaction *ka;
+
+		if (unlikely(current->jobctl & JOBCTL_STOP_PENDING) &&
+		    do_signal_stop(0))
+			goto relock;
+
+		if (unlikely(current->jobctl & JOBCTL_TRAP_MASK)) {
+			do_jobctl_trap();
+			spin_unlock_irq(&sighand->siglock);
+			goto relock;
+		}
+
+		/*
+		 * Signals generated by the execution of an instruction
+		 * need to be delivered before any other pending signals
+		 * so that the instruction pointer in the signal stack
+		 * frame points to the faulting instruction.
+		 */
+		signr = dequeue_synchronous_signal(&ksig->info);		//
+		if (!signr)
+			signr = dequeue_signal(current, &current->blocked, &ksig->info);
+
+		if (!signr)
+			break; /* will return 0 */
+
+		if (unlikely(current->ptrace) && signr != SIGKILL) {
+			signr = ptrace_signal(signr, &ksig->info);
+			if (!signr)
+				continue;
+		}
+
+		ka = &sighand->action[signr-1];
+
+		if (ka->sa.sa_handler == SIG_IGN) /* Do nothing.  */
+			continue;
+		if (ka->sa.sa_handler != SIG_DFL) {
+			/* Run the handler.  */
+			ksig->ka = *ka;
+
+			if (ka->sa.sa_flags & SA_ONESHOT)
+				ka->sa.sa_handler = SIG_DFL;
+
+			break; /* will return non-zero "signr" value */
+		}
+
+		/*
+		 * Now we are doing the default action for this signal.
+		 */
+		if (sig_kernel_ignore(signr)) /* Default is nothing. */
+			continue;
+
+		/*
+		 * Global init gets no signals it doesn't want.
+		 * Container-init gets no signals it doesn't want from same
+		 * container.
+		 *
+		 * Note that if global/container-init sees a sig_kernel_only()
+		 * signal here, the signal must have been generated internally
+		 * or must have come from an ancestor namespace. In either
+		 * case, the signal cannot be dropped.
+		 */
+		if (unlikely(signal->flags & SIGNAL_UNKILLABLE) &&
+				!sig_kernel_only(signr))
+			continue;
+
+		if (sig_kernel_stop(signr)) {
+			/*
+			 * The default action is to stop all threads in
+			 * the thread group.  The job control signals
+			 * do nothing in an orphaned pgrp, but SIGSTOP
+			 * always works.  Note that siglock needs to be
+			 * dropped during the call to is_orphaned_pgrp()
+			 * because of lock ordering with tasklist_lock.
+			 * This allows an intervening SIGCONT to be posted.
+			 * We need to check for that and bail out if necessary.
+			 */
+			if (signr != SIGSTOP) {
+				spin_unlock_irq(&sighand->siglock);
+
+				/* signals can be posted during this window */
+
+				if (is_current_pgrp_orphaned())
+					goto relock;
+
+				spin_lock_irq(&sighand->siglock);
+			}
+
+			if (likely(do_signal_stop(ksig->info.si_signo))) {
+				/* It released the siglock.  */
+				goto relock;
+			}
+
+			/*
+			 * We didn't actually stop, due to a race
+			 * with SIGCONT or something like that.
+			 */
+			continue;
+		}
+
+	fatal:
+		spin_unlock_irq(&sighand->siglock);
+
+		/*
+		 * Anything else is fatal, maybe with a core dump.
+		 */
+		current->flags |= PF_SIGNALED;
+
+		if (sig_kernel_coredump(signr)) {
+			if (print_fatal_signals)
+				print_fatal_signal(ksig->info.si_signo);
+			proc_coredump_connector(current);
+			/*
+			 * If it was able to dump core, this kills all
+			 * other threads in the group and synchronizes with
+			 * their demise.  If we lost the race with another
+			 * thread getting here, it set group_exit_code
+			 * first and our do_group_exit call below will use
+			 * that value and ignore the one we pass it.
+			 */
+			do_coredump(&ksig->info);
+		}
+
+		/*
+		 * Death signals, no core dump.
+		 */
+		do_group_exit(ksig->info.si_signo);
+		/* NOTREACHED */
+	}
+	spin_unlock_irq(&sighand->siglock);
+
+	ksig->sig = signr;
+	return ksig->sig > 0;
+}
+~~~
+~~~c
+static void
+handle_signal(struct ksignal *ksig, struct pt_regs *regs)
+{
+	bool stepping, failed;
+	struct fpu *fpu = &current->thread.fpu;
+
+	/* Are we from a system call? */
+	if (syscall_get_nr(current, regs) >= 0) {
+		/* If so, check system call restarting.. */
+		switch (syscall_get_error(current, regs)) {
+		case -ERESTART_RESTARTBLOCK:
+		case -ERESTARTNOHAND:
+			regs->ax = -EINTR;
+			break;
+
+		case -ERESTARTSYS:
+			if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
+				regs->ax = -EINTR;
+				break;
+			}
+		/* fallthrough */	//SA_RESTART
+		case -ERESTARTNOINTR:
+			regs->ax = regs->orig_ax;
+			regs->ip -= 2;
+			break;
+		}
+	}
+
+	/*
+	 * If TF is set due to a debugger (TIF_FORCED_TF), clear TF now
+	 * so that register information in the sigcontext is correct and
+	 * then notify the tracer before entering the signal handler.
+	 */
+	stepping = test_thread_flag(TIF_SINGLESTEP);
+	if (stepping)
+		user_disable_single_step(current);
+
+	failed = (setup_rt_frame(ksig, regs) < 0);
+	if (!failed) {
+		/*
+		 * Clear the direction flag as per the ABI for function entry.
+		 *
+		 * Clear RF when entering the signal handler, because
+		 * it might disable possible debug exception from the
+		 * signal handler.
+		 *
+		 * Clear TF for the case when it wasn't set by debugger to
+		 * avoid the recursive send_sigtrap() in SIGTRAP handler.
+		 */
+		regs->flags &= ~(X86_EFLAGS_DF|X86_EFLAGS_RF|X86_EFLAGS_TF);
+		/*
+		 * Ensure the signal handler starts with the new fpu state.
+		 */
+		if (fpu->fpstate_active)
+			fpu__clear(fpu);
+	}
+	signal_setup_done(failed, ksig, stepping);
+}
+~~~
+~~~c
+static int __setup_rt_frame(int sig, struct ksignal *ksig,
+			    sigset_t *set, struct pt_regs *regs)
+{
+	struct rt_sigframe __user *frame;
+	void __user *fp = NULL;
+	int err = 0;
+
+	frame = get_sigframe(&ksig->ka, regs, sizeof(struct rt_sigframe), &fp);
+
+	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+		return -EFAULT;
+
+	if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
+		if (copy_siginfo_to_user(&frame->info, &ksig->info))
+			return -EFAULT;
+	}
+
+	put_user_try {
+		/* Create the ucontext.  */
+		if (cpu_has_xsave)
+			put_user_ex(UC_FP_XSTATE, &frame->uc.uc_flags);
+		else
+			put_user_ex(0, &frame->uc.uc_flags);
+		put_user_ex(0, &frame->uc.uc_link);
+		save_altstack_ex(&frame->uc.uc_stack, regs->sp);
+
+		/* Set up to return from userspace.  If provided, use a stub
+		   already in userspace.  */
+		/* x86-64 should always use SA_RESTORER. */			//sys_rt_sigreturn
+		if (ksig->ka.sa.sa_flags & SA_RESTORER) {
+			put_user_ex(ksig->ka.sa.sa_restorer, &frame->pretcode);
+		} else {
+			/* could use a vstub here */
+			err |= -EFAULT;
+		}
+	} put_user_catch(err);
+
+	err |= setup_sigcontext(&frame->uc.uc_mcontext, fp, regs, set->sig[0]);
+	err |= __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
+
+	if (err)
+		return -EFAULT;
+
+	/* Set up registers for signal handler */
+	regs->di = sig;
+	/* In case the signal handler was declared without prototypes */
+	regs->ax = 0;
+
+	/* This also works for non SA_SIGINFO handlers because they expect the
+	   next argument after the signal number on the stack. */
+	regs->si = (unsigned long)&frame->info;
+	regs->dx = (unsigned long)&frame->uc;
+	regs->ip = (unsigned long) ksig->ka.sa.sa_handler;
+
+	regs->sp = (unsigned long)frame;
+
+	/* Set up the CS register to run signal handlers in 64-bit mode,
+	   even if the handler happens to be interrupting 32-bit code. */
+	regs->cs = __USER_CS;
+
+	return 0;
+}
+~~~
+~~~c
+asmlinkage long sys_rt_sigreturn(void)
+{
+	struct pt_regs *regs = current_pt_regs();
+	struct rt_sigframe __user *frame;
+	sigset_t set;
+
+	frame = (struct rt_sigframe __user *)(regs->sp - sizeof(long));
+	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
+		goto badframe;
+	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
+		goto badframe;
+
+	set_current_blocked(&set);
+
+	if (restore_sigcontext(regs, &frame->uc.uc_mcontext))
+		goto badframe;
+
+	if (restore_altstack(&frame->uc.uc_stack))
+		goto badframe;
+
+	return regs->ax;
+
+badframe:
+	signal_fault(regs, frame, "rt_sigreturn");
+	return 0;
+}
+~~~
