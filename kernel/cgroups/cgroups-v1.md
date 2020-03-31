@@ -4,7 +4,7 @@ Written by Paul Menage <menage@google.com> based on [Documentation/cgroup-v1/cpu
 
 ## Control Groups
 * What are cgroups?
-Control Groups provide a mechanism for aggregatng/partitioning sets of tasks, and all their future children into hierarchical groups with specialized behaviour.
+Control Groups provide a mechanism for aggregating/partitioning sets of tasks, and all their future children into hierarchical groups with specialized behaviour.
 
 	* A *Group* associates a set of tasks with a set of parameters for one or more subsystems.
 	* A *subsystem* is a module that makes use of the task grouping facilities provided by cgroups to treat groups of tasks in particular ways. A subsystem is typically a "resource controller" that schedules a resource or applies per-cgroup limits, but it may be anything that wants to act on a group of processes, e.g. a virtualization subsystem.
