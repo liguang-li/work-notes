@@ -38,7 +38,8 @@ At one extreme, each resource controller or subsystem could be in a separate hie
 ## How the cgroups implemented?
 Control Groups extends the kernel as following:
 * Each task in the system has a reference-counted pointer to a css_set
-~~~
+
+~~~c
 struct task_struct {
 	...
 #ifdef CONFIG_CGROUPS
@@ -49,10 +50,10 @@ struct task_struct {
 #endif
 	...
 };
-~~~c
-
-* A css_set contains a set of reference-counted pointers to cgroup_subsys_state objects, one for each cgroup subsystem registered in the system. There is no direct link from a task to the cgroup of which it's a member in each hierarchy, but this can be determined by following pointers through the cgroup_subsys_state objects. This is because accessing the subsystem state is something that's expected to happen frequently and in performance-critical code, whereas operations that require a task's actual cgroup assignments are less common. A linked list runs through the cg_list field of each task_struct using the css_set, anchored at css_set->tasks.
 ~~~
+* A css_set contains a set of reference-counted pointers to cgroup_subsys_state objects, one for each cgroup subsystem registered in the system. There is no direct link from a task to the cgroup of which it's a member in each hierarchy, but this can be determined by following pointers through the cgroup_subsys_state objects. This is because accessing the subsystem state is something that's expected to happen frequently and in performance-critical code, whereas operations that require a task's actual cgroup assignments are less common. A linked list runs through the cg_list field of each task_struct using the css_set, anchored at css_set->tasks.
+
+~~~c
 struct css_set {
 	atomic_t refcount;
 	struct hlist_node hlist;			/* hash, in case of quickly searching the specific css_set */
@@ -61,24 +62,25 @@ struct css_set {
 	struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
 	struct rcu_head rcu_head;
 };
-~~~c
+~~~
+
 *task_struct.cg_list -> css_set.tasks*
 
-~~~
+~~~c
 struct cgroup_subsys_state {
 	struct cgroup * cgroup;
 	atomic_t refcnt;
 	unsigned long flags;
 	struct css_id *id;
 };
-~~~c
+~~~
 
 *task_struct->css_set->cgroups[]->cgroup_subsys_state->cgroup*
 
 * A cgroup hierarchy filesystem can be mounted for browsing and manipulation from user space.
 * Can list all the tasks (by PID) attached to any cgroup.
 
-~~~
+~~~c
 struct cgroup {
 	unsigned long flags;
 	atomic_t count;
@@ -97,17 +99,16 @@ struct cgroup {
 	struct list_head event_list;
 	spinlock_t event_list_lock;
 };
-~~~c
-
 ~~~
+
+~~~c
 struct cg_cgroup_link {
 	struct list_head cgrp_link_list;	/* cg_cgroup_link.cgrp_link_list -> cgroup.css_sets */
 	struct cgroup *cgrp;			/* cg_cgroup_link.cgrp = cgroup */
 	struct list_head cg_link_list;		/* cg_cgroup_link.cg_link_list -> css_set->cg_links */
 	struct css_set * cg;			/* cg_cgroup_link.cg = css_set */
 };
-~~~c
-
+~~~
 **Why?**
 因为cgroup和css_set是一个多对多的关系,必须添加一个中间结构来将两者联系起来.
 
@@ -115,7 +116,7 @@ struct cg_cgroup_link {
 一个进程对应的css_set,一个css_set就存储了一组进程跟各个子系统相关的信息,但是这些信息有可能不是从一个cgroup哪里获得,因为一个进程可以同时属于几个cgroup,只要这些cgroup不在同一个层次.
 一个cgroup中可以有多个进程,而这些进程的css_set不一定相同,因为有些进程可能还加入了其他cgroup.但是同一个cgroup中的进程与该cgroup关联的cgroup_subsys_state都受到该cgroup的管理,所以一个cgroup也可以对应多个css_set.
 
-~~~
+~~~c
 struct cgroupfs_root {
 	struct super_block *sb;			/* cgroup superblock */
 	unsigned long subsys_bits;		/* the subsystem's bit that will be attached to this hierarchy */
@@ -129,9 +130,8 @@ struct cgroupfs_root {
 	char release_agent_path[PATH_MAX];
 	char name[MAX_CGROUP_ROOT_NAMELEN];
 };
-~~~c
-
 ~~~
+~~~c
 struct cgroup_subsys {
 	struct cgroup_subsys_state *(*create)(struct cgroup_subsys *ss, strcut cgroup *cgrp);
 	int (*pre_destroy)(struct cgroup_subsys *ss, struct cgroup *cgrp);
@@ -159,7 +159,8 @@ struct cgroup_subsys {
 	spinlock_t id_lock;
 	struct module *module;
 };
-~~~c
+~~~
+
 The implemention of cgroups requires a few, simple hooks into the rest of the kernel, none in the performance-critical paths:
 * in init/main.c, to initialize the root cgroups and initial css_set at system boot.
 * in fork/exit, to attach and detach a task from its css_set.
@@ -175,7 +176,8 @@ When a cgroup filesystem is unmounted, if there are any child cgroups created be
 No new system calls are added for cgroups - all support for querying and modifying cgroups is via this cgroup file system.
 
 Each task under /proc has an added file named 'cgroup' displaying, for each active hierarchy, the subsystem names and the cgroup name as the path relative to the root of the cgroup file system.
-~~~
+
+~~~shell
 xuan@xuan-K43SJ:~$ cat /proc/self/cgroup 
 12:rdma:/
 11:memory:/
@@ -190,7 +192,7 @@ xuan@xuan-K43SJ:~$ cat /proc/self/cgroup
 2:hugetlb:/
 1:name=systemd:/user.slice/user-1000.slice/user@1000.service/gnome-terminal-server.service
 0::/user.slice/user-1000.slice/user@1000.service/gnome-terminal-server.service
-~~~shell
+~~~
 
 Each cgroup is represented by a directory in the cgroup file system containing the following file describing that cgroup:
 * tasks: list of tasks (by PID) attached to that cgroup. This list is not guaranteed to be sorted. Writing a thread ID into this file moves the thread into this cgroup.
@@ -270,48 +272,44 @@ If there are multiple tasks in the taskset, then:
 * @tset contains all tasks from the thread group whether or not they're switching cgroups
 * the first task is leader
 
-~~~
 void css_reset(struct cgroup_subsys_state *css)
 
 void cancel_attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
 Called when a task attach operation has failed after can_attach() has succeeded.
-~~~c
 
 void attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
 Called after the task has been attached to the cgroup, to allow any post-attachment activity that requires memory allocations or blocking.
 
 void bind(struct cgroup *cgrp)
 Called when a cgroup subsystem is rebound to a different hierarchy and root cgroup.
-
 ## Cgroup filesystem
 Cgroups用户空间管理是通过cgroup文件系统实现的.
-~~~
+
+~~~c
 static struct file_system_type cgroup_fs_type {
 	.name = "cgroup",
 	.get_sb = cgroup_get_sb,
 	.kill_sb = cgroup_kill_sb,
 };
-~~~c
-
 ~~~
+
+~~~c
 static const struct super_operations cgroup_ops = {
 	.statfs = simple_statfs,
 	.drop_inode = generic_delete_inode,
 	.show_options = cgroup_show_options,
 	.remount_fs = cgroup_remount,
 };
-~~~c
-
 ~~~
+~~~c
 static const struct inode_operations cgrpup_dir_inode_operations = {
 	.lookup = simple_lookup,
 	.mkdir = cgroup_mkdir,			/* create new cgroup cgroup_mkdir -> cgroup_create  */
 	.rmdir = cgroup_rmdir,
 	.rename = cgroup_rename,
 };
-~~~c
-
 ~~~
+~~~c
 static const struct file_operations cgroup_file_operations = {
 	.read = cgroup_file_read,
 	.write = cgroup_file_write,
@@ -319,10 +317,10 @@ static const struct file_operations cgroup_file_operations = {
 	.open = cgroup_file_open,
 	.release = cgroup_file_release,
 };
-~~~c
-
-*cftype*
 ~~~
+*cftype*
+
+~~~c
 struct cftype {
 	char name[MAX_CFTYPE_NAME];
 	int private;
@@ -344,5 +342,6 @@ struct cftype {
 	int (*release)(
 	int (*register_event)(
 	void (*unregister_event)(
+
 };
-~~~c
+~~~
