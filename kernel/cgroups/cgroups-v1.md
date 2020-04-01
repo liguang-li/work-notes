@@ -163,13 +163,13 @@ struct cgroup_subsys {
 
 The implemention of cgroups requires a few, simple hooks into the rest of the kernel, none in the performance-critical paths:
 * in init/main.c, to initialize the root cgroups and initial css_set at system boot.
-![cgroup_init_early](pics/cgroup_init_early.png)
-![cgroup_init](pics/cgroup_init.png)
+![cgroup_init_early](.pics/cgroup_init_early.png)
+![cgroup_init](.pics/cgroup_init.png)
 * in fork/exit, to attach and detach a task from its css_set.
-![fork](pics/cgroup_fork.png)
+![fork](.pics/cgroup_fork.png)
 
 In addition, a new file system of type "cgroup" may be mounted, to enable browsing and modifying the cgroups presently known to the kernel. Which mounting a cgroup hierarchy, you may specify a comma-separted of list of subsystems to mount as the filesystem mount options. By default, mounting the cgroup filesyetem attempts to mount a hierarchy containing all the registered subsystems.
-![cgroup_mount](pics/cgroup_mount.PNG)
+![cgroup_mount](.pics/cgroup_mount.PNG)
 
 If an active hierarchy with exactly the same set of subsystems already exists, it will be reused for the new mount. If no existing hierarchy matches, and any of the requested subsystems are in use in an existing hierarchy, the mount will fail with -EBUSY. Otherwise, a new hierarchy is activated, associated with the requested subsystems.
 
@@ -208,7 +208,7 @@ Each cgroup is represented by a directory in the cgroup file system containing t
 * release_agent: the path to use for release notifications (exists in the top cgroup only).
 
 New cgroups are created using mkdir system call or shell command. The properties of a cgroup, such as its flags, are modified by writing to appropriate file in that cgroups directory.
-![cgroup_mkdir](pics/cgroup_mkdir.PNG)
+![cgroup_mkdir](.pics/cgroup_mkdir.PNG)
 
 * The named hierarchical structure of nested cgroups allows partitioning a large subsystem into nested, dynamically changeable, "soft-partitions".
 * The attachment of each task, automatically inherited at fork by any children of that task, to a cgroup allows organizing the work load on a system into related sets of tasks. A task may re-attached to any other cgroup, if allowed by the permissions on the necessary cgroup file system directories.
